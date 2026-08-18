@@ -1,0 +1,48 @@
+# ==============================================================================
+# 1. Monorepo & System Files
+# ==============================================================================
+.DS_Store
+Thumbs.db
+*.log
+.env
+.env*.local
+
+# ==============================================================================
+# 2. Next.js / Node.js Packages & Build Outputs
+# ==============================================================================
+# Dependency directories (placed anywhere in the monorepo)
+**/node_modules/
+.pnpm-store/
+
+# Next.js build output
+**/.next/
+**/out/
+
+# Production build and caches
+**/dist/
+**/.turbo/
+**/.eslintcache
+
+# ==============================================================================
+# 3. Python Packages & Environments
+# ==============================================================================
+# Virtual environments (matches env, .env, venv, .venv at any depth)
+**/venv/
+**/.venv/
+**/env/
+**/.env/
+
+# Python dependency management files
+**/.poetry/
+**/.pdm/
+**/.pipenv/
+
+# Python build artifacts and caches
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/.pytest_cache/
+**/.mypy_cache/
+**/*.egg-info/
+**/dist/
+**/build/
