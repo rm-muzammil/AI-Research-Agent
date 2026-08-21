@@ -7,6 +7,8 @@ declare global {
   var _pgPool: Pool | undefined;
 }
 
+const isSslEnabled = process.env.POSTGRES_SSL === "true";
+
 const pool =
   global._pgPool ??
   new Pool({
@@ -16,6 +18,7 @@ const pool =
     password: process.env.POSTGRES_PASSWORD ?? "research_pass",
     database: process.env.POSTGRES_DB ?? "ai_research",
     max: 5,
+    ssl: isSslEnabled ? { rejectUnauthorized: false } : false,
   });
 
 if (process.env.NODE_ENV !== "production") {
