@@ -1,0 +1,1313 @@
+{
+  "name": "AI Research Agent - Production",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "function esc(v) {\n  if (v === null || v === undefined) return 'NULL';\n  const s = String(v);\n  return \"'\" + s.replace(/'/g, \"''\") + \"'\";\n}\n\nconst item = $input.first().json;\nconst forwardedFor = item.headers?.['x-forwarded-for'] || '';\nconst ip = (forwardedFor.split(',')[0] || item.headers?.['x-real-ip'] || 'unknown').trim();\nconst userQuery = item.body.user_query;\n\nconst sql = `SELECT ${esc(ip)} AS ip, COUNT(*)::int AS request_count FROM rate_limit_log WHERE ip_address = ${esc(ip)} AND created_at > now() - interval '1 hour';`;\n\nreturn [{ json: { sql, ip, user_query: userQuery } }];"
+      },
+      "id": "build-sql-check-rate-limit",
+      "name": "Code: Build SQL - Check Rate Limit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2840,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}"
+      },
+      "id": "check-rate-limit",
+      "name": "Postgres: Check Rate Limit",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -2680,
+        500
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ai-research-postgres-cred",
+          "name": "AI Research Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rateResult = $input.first().json;\nconst original = $('Code: Build SQL - Check Rate Limit').first().json;\nreturn [{ json: { request_count: rateResult.request_count, ip: original.ip, user_query: original.user_query } }];"
+      },
+      "id": "merge-rate-limit-context",
+      "name": "Code: Attach Rate Limit Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2520,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "rate-limit-cond",
+              "leftValue": "={{ $json.request_count }}",
+              "rightValue": 10,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-rate-limited",
+      "name": "IF: Rate Limit Exceeded",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -2360,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseCode": 429,
+        "responseBody": "={{ { error: \"Rate limit exceeded. Max 10 requests per hour per IP. Try again later.\" } }}"
+      },
+      "id": "respond-rate-limited",
+      "name": "Respond: 429 Rate Limited",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -2360,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "function esc(v) {\n  if (v === null || v === undefined) return 'NULL';\n  const s = String(v);\n  return \"'\" + s.replace(/'/g, \"''\") + \"'\";\n}\n\nconst d = $input.first().json;\nconst sql = `INSERT INTO rate_limit_log (ip_address) VALUES (${esc(d.ip)});`;\n\nreturn [{ json: { sql, user_query: d.user_query } }];"
+      },
+      "id": "build-sql-log-rate-limit",
+      "name": "Code: Build SQL - Log Rate Limit Entry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2200,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}"
+      },
+      "id": "log-rate-limit-entry",
+      "name": "Postgres: Log Rate Limit Entry",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -2040,
+        620
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ai-research-postgres-cred",
+          "name": "AI Research Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "research",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook: Submit Query",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -3000,
+        500
+      ],
+      "webhookId": "research-submit"
+    },
+    {
+      "parameters": {
+        "jsCode": "function esc(v) {\n  if (v === null || v === undefined) return 'NULL';\n  if (typeof v === 'number') return String(v);\n  if (typeof v === 'boolean') return String(v);\n  const s = typeof v === 'string' ? v : JSON.stringify(v);\n  return \"'\" + s.replace(/'/g, \"''\") + \"'\";\n}\n\nconst userQuery = $('Code: Build SQL - Log Rate Limit Entry').first().json.user_query;\nconst sql = `INSERT INTO research_jobs (user_query, status) VALUES (${esc(userQuery)}, 'researching') RETURNING id, user_query, status, created_at;`;\n\nreturn [{ json: { sql } }];"
+      },
+      "id": "build-sql-create-job",
+      "name": "Code: Build SQL - Create Job",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2180,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}"
+      },
+      "id": "create-job",
+      "name": "Postgres: Create Job",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -1960,
+        500
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ai-research-postgres-cred",
+          "name": "AI Research Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { ...($input.first().json), _start: Date.now() } }];"
+      },
+      "id": "start-router-timer",
+      "name": "Code: Start Router Timer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1740,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  contents: [{\n    parts: [{\n      text: `You are the Router agent in a multi-agent research pipeline. Your job is to break the user's question into 4-6 clear, non-overlapping sub-questions that together fully answer it.\nReturn ONLY valid JSON, no markdown fences, in this exact shape:\n{\"sub_questions\": [\"...\", \"...\"]}\n\nQuestion: ${$json.user_query}`\n    }]\n  }],\n  generationConfig: { temperature: 0.3, response_mime_type: \"application/json\" }\n}) }}"
+      },
+      "id": "gemini-router",
+      "name": "Gemini: Router",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1520,
+        500
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 8000
+    },
+    {
+      "parameters": {
+        "jsCode": "function safeParseJSON(text) {\n  let t = (text || '').trim();\n  if (t.startsWith('```')) {\n    t = t.replace(/^```(json)?\\n?/, '').replace(/```\\s*$/, '').trim();\n  }\n  try {\n    return JSON.parse(t);\n  } catch (e) {\n    throw new Error(`Gemini returned malformed JSON: ${e.message}. First 500 chars: ${t.slice(0, 500)}`);\n  }\n}\n\nconst raw = $input.first().json;\nconst text = raw.candidates[0].content.parts[0].text;\nconst parsed = safeParseJSON(text);\nconst timed = $('Code: Start Router Timer').first().json;\nconst job = $('Postgres: Create Job').first().json;\n\nreturn [{\n  json: {\n    job_id: job.id,\n    user_query: job.user_query,\n    sub_questions: parsed.sub_questions,\n    latency_ms: Date.now() - timed._start\n  }\n}];"
+      },
+      "id": "parse-router",
+      "name": "Code: Parse Router Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1300,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "function esc(v) {\n  if (v === null || v === undefined) return 'NULL';\n  if (typeof v === 'number') return String(v);\n  if (typeof v === 'boolean') return String(v);\n  const s = typeof v === 'string' ? v : JSON.stringify(v);\n  return \"'\" + s.replace(/'/g, \"''\") + \"'\";\n}\n\nconst d = $input.first().json;\nconst inputCtx = JSON.stringify({ user_query: d.user_query });\nconst outputData = JSON.stringify({ sub_questions: d.sub_questions });\nconst sql = `INSERT INTO agent_outputs (job_id, agent_name, input_context, output_data, model_used, latency_ms) VALUES (${esc(d.job_id)}, 'router', ${esc(inputCtx)}::jsonb, ${esc(outputData)}::jsonb, 'gemini-3.6-flash', ${d.latency_ms});`;\n\nreturn [{ json: { sql } }];"
+      },
+      "id": "build-sql-log-router",
+      "name": "Code: Build SQL - Log Router Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1080,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}"
+      },
+      "id": "log-router-output",
+      "name": "Postgres: Log Router Output",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -860,
+        420
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ai-research-postgres-cred",
+          "name": "AI Research Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { ...($input.first().json), _start: Date.now() } }];"
+      },
+      "id": "start-researcher-timer",
+      "name": "Code: Start Researcher Timer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1080,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  contents: [{\n    parts: [{\n      text: `You are the Researcher agent. Below is a list of sub-questions, all belonging to one larger research task. For EACH sub-question, provide 2-3 credible sources (real organizations/publications; if unsure of a live URL, give the publisher name and topic instead of inventing one) with a short summary and a relevance_score from 0 to 1.\nReturn ONLY valid JSON, no markdown fences, in this exact shape:\n{\"results\": [{\"sub_question\": \"...\", \"sources\": [{\"title\": \"...\", \"url\": \"...\", \"summary\": \"...\", \"relevance_score\": 0.8}]}]}\n\nOriginal question: ${$json.user_query}\nSub-questions: ${JSON.stringify($json.sub_questions)}`\n    }]\n  }],\n  generationConfig: { temperature: 0.4, response_mime_type: \"application/json\" }\n}) }}"
+      },
+      "id": "gemini-researcher",
+      "name": "Gemini: Researcher",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -860,
+        600
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 8000
+    },
+    {
+      "parameters": {
+        "jsCode": "function safeParseJSON(text) {\n  let t = (text || '').trim();\n  if (t.startsWith('```')) {\n    t = t.replace(/^```(json)?\\n?/, '').replace(/```\\s*$/, '').trim();\n  }\n  try {\n    return JSON.parse(t);\n  } catch (e) {\n    throw new Error(`Gemini returned malformed JSON: ${e.message}. First 500 chars: ${t.slice(0, 500)}`);\n  }\n}\n\nconst raw = $input.first().json;\nconst text = raw.candidates[0].content.parts[0].text;\nconst parsed = safeParseJSON(text);\nconst timed = $('Code: Start Researcher Timer').first().json;\n\nreturn [{\n  json: {\n    job_id: timed.job_id,\n    user_query: timed.user_query,\n    results: parsed.results || [],\n    latency_ms: Date.now() - timed._start\n  }\n}];"
+      },
+      "id": "parse-researcher",
+      "name": "Code: Parse Researcher Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -640,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "function esc(v) {\n  if (v === null || v === undefined) return 'NULL';\n  if (typeof v === 'number') return String(v);\n  if (typeof v === 'boolean') return String(v);\n  const s = typeof v === 'string' ? v : JSON.stringify(v);\n  return \"'\" + s.replace(/'/g, \"''\") + \"'\";\n}\n\nconst d = $input.first().json;\nconst inputCtx = JSON.stringify({ sub_questions: d.results.map(r => r.sub_question) });\nconst outputData = JSON.stringify({ results: d.results });\nconst sql = `INSERT INTO agent_outputs (job_id, agent_name, input_context, output_data, model_used, latency_ms) VALUES (${esc(d.job_id)}, 'researcher', ${esc(inputCtx)}::jsonb, ${esc(outputData)}::jsonb, 'gemini-3.6-flash', ${d.latency_ms});`;\n\nreturn [{ json: { sql } }];"
+      },
+      "id": "build-sql-log-researcher",
+      "name": "Code: Build SQL - Log Researcher Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -420,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}"
+      },
+      "id": "log-researcher-output",
+      "name": "Postgres: Log Researcher Output",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -200,
+        520
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ai-research-postgres-cred",
+          "name": "AI Research Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function esc(v) {\n  if (v === null || v === undefined) return 'NULL';\n  if (typeof v === 'number') return String(v);\n  if (typeof v === 'boolean') return String(v);\n  const s = typeof v === 'string' ? v : JSON.stringify(v);\n  return \"'\" + s.replace(/'/g, \"''\") + \"'\";\n}\n\nconst d = $input.first().json;\nconst jobId = d.job_id;\nconst rows = [];\n\nfor (const r of (d.results || [])) {\n  for (const s of (r.sources || [])) {\n    const score = (s.relevance_score !== undefined && s.relevance_score !== null) ? Number(s.relevance_score) : 0.5;\n    rows.push(`(${esc(jobId)}, ${esc(s.url)}, ${esc(s.title)}, ${esc(s.summary)}, ${score}, 'researcher')`);\n  }\n}\n\nif (rows.length === 0) {\n  return [{ json: { sql: 'SELECT 1;' } }];\n}\n\nconst sql = `INSERT INTO sources (job_id, url, title, content_summary, relevance_score, agent_source) VALUES ${rows.join(',\\n')} ON CONFLICT (job_id, url) DO NOTHING;`;\n\nreturn [{ json: { sql } }];"
+      },
+      "id": "build-sql-save-sources",
+      "name": "Code: Build SQL - Save Sources",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -420,
+        680
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}"
+      },
+      "id": "save-sources",
+      "name": "Postgres: Save Sources",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -200,
+        680
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ai-research-postgres-cred",
+          "name": "AI Research Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "id": "merge-researcher-results",
+      "name": "Merge: Sync Researcher Branches",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        20,
+        600
+      ],
+      "notes": "Sync barrier only - real data pulled fresh from 'Code: Parse Researcher Output' downstream."
+    },
+    {
+      "parameters": {
+        "jsCode": "const job = $('Postgres: Create Job').first().json;\nconst researched = $('Code: Parse Researcher Output').first().json.results;\nreturn [{ json: { job_id: job.id, user_query: job.user_query, researched, _start: Date.now() } }];"
+      },
+      "id": "start-factchecker-timer",
+      "name": "Code: Prep + Start FactChecker Timer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  contents: [{\n    parts: [{\n      text: `You are the Fact Checker agent. Given the research results below (sub-questions with sources and summaries), extract 6-10 distinct, concrete factual claims made across the research. For each claim, assess its status using EXACTLY one of these four values:\n- \"verified\": supported by 2+ independent credible sources in the research\n- \"disputed\": sources in the research conflict on this claim\n- \"unverifiable\": cannot be confirmed from the given sources (vague, speculative, or unsupported by any listed source)\n- \"unverified\": supported by only one source, not yet cross-checked\nReturn ONLY valid JSON, no markdown fences, in this exact shape:\n{\"claims\": [{\"claim_text\": \"...\", \"status\": \"verified\", \"evidence\": [\"source title 1\", \"source title 2\"]}]}\n\nOriginal question: ${$json.user_query}\nResearch data: ${JSON.stringify($json.researched)}`\n    }]\n  }],\n  generationConfig: { temperature: 0.2, response_mime_type: \"application/json\" }\n}) }}"
+      },
+      "id": "gemini-factchecker",
+      "name": "Gemini: Fact Checker",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        460,
+        600
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 8000
+    },
+    {
+      "parameters": {
+        "jsCode": "function safeParseJSON(text) {\n  let t = (text || '').trim();\n  if (t.startsWith('```')) {\n    t = t.replace(/^```(json)?\\n?/, '').replace(/```\\s*$/, '').trim();\n  }\n  try {\n    return JSON.parse(t);\n  } catch (e) {\n    throw new Error(`Gemini returned malformed JSON: ${e.message}. First 500 chars: ${t.slice(0, 500)}`);\n  }\n}\n\nconst raw = $input.first().json;\nconst text = raw.candidates[0].content.parts[0].text;\nconst parsed = safeParseJSON(text);\nconst timed = $('Code: Prep + Start FactChecker Timer').first().json;\n\nreturn [{\n  json: {\n    job_id: timed.job_id,\n    user_query: timed.user_query,\n    researched: timed.researched,\n    claims: parsed.claims || [],\n    latency_ms: Date.now() - timed._start\n  }\n}];"
+      },
+      "id": "parse-factchecker",
+      "name": "Code: Parse Fact Checker Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "function esc(v) {\n  if (v === null || v === undefined) return 'NULL';\n  if (typeof v === 'number') return String(v);\n  if (typeof v === 'boolean') return String(v);\n  const s = typeof v === 'string' ? v : JSON.stringify(v);\n  return \"'\" + s.replace(/'/g, \"''\") + \"'\";\n}\n\nconst d = $input.first().json;\nconst outputData = JSON.stringify({ claims: d.claims });\nconst sql = `INSERT INTO agent_outputs (job_id, agent_name, output_data, model_used, latency_ms) VALUES (${esc(d.job_id)}, 'fact_checker', ${esc(outputData)}::jsonb, 'gemini-3.6-flash', ${d.latency_ms});`;\n\nreturn [{ json: { sql } }];"
+      },
+      "id": "build-sql-log-factchecker",
+      "name": "Code: Build SQL - Log FactChecker Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}"
+      },
+      "id": "log-factchecker-output",
+      "name": "Postgres: Log FactChecker Output",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1120,
+        520
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ai-research-postgres-cred",
+          "name": "AI Research Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function esc(v) {\n  if (v === null || v === undefined) return 'NULL';\n  if (typeof v === 'number') return String(v);\n  if (typeof v === 'boolean') return String(v);\n  const s = typeof v === 'string' ? v : JSON.stringify(v);\n  return \"'\" + s.replace(/'/g, \"''\") + \"'\";\n}\n\nconst allowedStatus = ['unverified', 'verified', 'disputed', 'unverifiable'];\nconst d = $input.first().json;\nconst jobId = d.job_id;\nconst claims = d.claims || [];\n\nif (claims.length === 0) {\n  return [{ json: { sql: 'SELECT 1;' } }];\n}\n\nconst rows = claims.map(c => {\n  const status = allowedStatus.includes(c.status) ? c.status : 'unverified';\n  return `(${esc(jobId)}, 'fact_checker', ${esc(c.claim_text)}, ${esc(status)}, ${esc(JSON.stringify(c.evidence || []))}::jsonb, now(), 'fact_checker')`;\n}).join(',\\n');\n\nconst sql = `INSERT INTO claims (job_id, agent_name, claim_text, status, evidence, checked_at, checked_by) VALUES ${rows};`;\n\nreturn [{ json: { sql } }];"
+      },
+      "id": "build-sql-save-claims",
+      "name": "Code: Build SQL - Save Claims",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        680
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}"
+      },
+      "id": "save-claims",
+      "name": "Postgres: Save Claims",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1120,
+        680
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ai-research-postgres-cred",
+          "name": "AI Research Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "id": "merge-factchecker-results",
+      "name": "Merge: Sync FactChecker Branches",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        600
+      ],
+      "notes": "Sync barrier only - real data pulled fresh from 'Code: Parse Fact Checker Output' downstream."
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('Code: Parse Fact Checker Output').first().json;\nreturn [{ json: { job_id: d.job_id, user_query: d.user_query, researched: d.researched, claims: d.claims, _start: Date.now() } }];"
+      },
+      "id": "start-analyst-timer",
+      "name": "Code: Prep + Start Analyst Timer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  contents: [{\n    parts: [{\n      text: `You are the Analyst agent. Using the research data and fact-checked claims below, produce a structured comparison of the options/trends found in the research, highlighting tradeoffs. Note any claims marked \"disputed\" or \"unverifiable\" as caveats rather than presenting them as settled fact.\nReturn ONLY valid JSON, no markdown fences, in this exact shape:\n{\"comparison_summary\": \"...\", \"key_trends\": [\"...\"], \"tradeoffs\": [\"...\"], \"caveats\": [\"...\"]}\n\nOriginal question: ${$json.user_query}\nResearch data: ${JSON.stringify($json.researched)}\nFact-checked claims: ${JSON.stringify($json.claims)}`\n    }]\n  }],\n  generationConfig: { temperature: 0.4, response_mime_type: \"application/json\" }\n}) }}"
+      },
+      "id": "gemini-analyst",
+      "name": "Gemini: Analyst",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1780,
+        600
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 8000
+    },
+    {
+      "parameters": {
+        "jsCode": "function safeParseJSON(text) {\n  let t = (text || '').trim();\n  if (t.startsWith('```')) {\n    t = t.replace(/^```(json)?\\n?/, '').replace(/```\\s*$/, '').trim();\n  }\n  try {\n    return JSON.parse(t);\n  } catch (e) {\n    throw new Error(`Gemini returned malformed JSON: ${e.message}. First 500 chars: ${t.slice(0, 500)}`);\n  }\n}\n\nconst raw = $input.first().json;\nconst text = raw.candidates[0].content.parts[0].text;\nconst parsed = safeParseJSON(text);\nconst timed = $('Code: Prep + Start Analyst Timer').first().json;\n\nreturn [{\n  json: {\n    job_id: timed.job_id,\n    user_query: timed.user_query,\n    researched: timed.researched,\n    claims: timed.claims,\n    analysis: parsed,\n    latency_ms: Date.now() - timed._start\n  }\n}];"
+      },
+      "id": "parse-analyst",
+      "name": "Code: Parse Analyst Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "function esc(v) {\n  if (v === null || v === undefined) return 'NULL';\n  if (typeof v === 'number') return String(v);\n  if (typeof v === 'boolean') return String(v);\n  const s = typeof v === 'string' ? v : JSON.stringify(v);\n  return \"'\" + s.replace(/'/g, \"''\") + \"'\";\n}\n\nconst d = $input.first().json;\nconst outputData = JSON.stringify(d.analysis);\nconst sql = `INSERT INTO agent_outputs (job_id, agent_name, output_data, model_used, latency_ms) VALUES (${esc(d.job_id)}, 'analyst', ${esc(outputData)}::jsonb, 'gemini-3.6-flash', ${d.latency_ms});`;\n\nreturn [{ json: { sql } }];"
+      },
+      "id": "build-sql-log-analyst",
+      "name": "Code: Build SQL - Log Analyst Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2220,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}"
+      },
+      "id": "log-analyst-output",
+      "name": "Postgres: Log Analyst Output",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2440,
+        600
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ai-research-postgres-cred",
+          "name": "AI Research Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('Code: Parse Analyst Output').first().json;\nreturn [{ json: { job_id: d.job_id, user_query: d.user_query, researched: d.researched, claims: d.claims, analysis: d.analysis, _start: Date.now() } }];"
+      },
+      "id": "start-synthesizer-timer",
+      "name": "Code: Prep + Start Synthesizer Timer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2660,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  contents: [{\n    parts: [{\n      text: `You are the Synthesizer agent, the final step in a research pipeline. Using ONLY the research, fact-checked claims, and analyst comparison below, produce a report. Incorporate the analyst's comparison_summary, key_trends, and tradeoffs into the comparison section. If any claims are marked \"disputed\" or \"unverifiable\", note them briefly as caveats rather than presenting them as settled fact.\nReturn ONLY valid JSON, no markdown fences, in this exact shape:\n{\n  \"executive_summary\": \"...\",\n  \"full_report\": { \"overview\": \"...\", \"comparison\": \"...\", \"recommendation\": \"...\", \"caveats\": \"...\" },\n  \"citations\": [{\"index\": 1, \"title\": \"...\", \"url\": \"...\"}],\n  \"recommended_actions\": [\"...\", \"...\"]\n}\n\nOriginal question: ${$json.user_query}\nResearch data: ${JSON.stringify($json.researched)}\nFact-checked claims: ${JSON.stringify($json.claims)}\nAnalyst comparison: ${JSON.stringify($json.analysis)}`\n    }]\n  }],\n  generationConfig: { temperature: 0.5, response_mime_type: \"application/json\" }\n}) }}"
+      },
+      "id": "gemini-synthesizer",
+      "name": "Gemini: Synthesizer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2880,
+        600
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 8000
+    },
+    {
+      "parameters": {
+        "jsCode": "function safeParseJSON(text) {\n  let t = (text || '').trim();\n  if (t.startsWith('```')) {\n    t = t.replace(/^```(json)?\\n?/, '').replace(/```\\s*$/, '').trim();\n  }\n  try {\n    return JSON.parse(t);\n  } catch (e) {\n    throw new Error(`Gemini returned malformed JSON: ${e.message}. First 500 chars: ${t.slice(0, 500)}`);\n  }\n}\n\nconst raw = $input.first().json;\nconst text = raw.candidates[0].content.parts[0].text;\nconst parsed = safeParseJSON(text);\nconst timed = $('Code: Prep + Start Synthesizer Timer').first().json;\n\nreturn [{\n  json: {\n    job_id: timed.job_id,\n    executive_summary: parsed.executive_summary,\n    full_report: parsed.full_report,\n    citations: parsed.citations || [],\n    recommended_actions: parsed.recommended_actions || [],\n    latency_ms: Date.now() - timed._start\n  }\n}];"
+      },
+      "id": "parse-synthesizer",
+      "name": "Code: Parse Synthesizer Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3100,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "function esc(v) {\n  if (v === null || v === undefined) return 'NULL';\n  if (typeof v === 'number') return String(v);\n  if (typeof v === 'boolean') return String(v);\n  const s = typeof v === 'string' ? v : JSON.stringify(v);\n  return \"'\" + s.replace(/'/g, \"''\") + \"'\";\n}\n\nconst d = $input.first().json;\nconst outputData = JSON.stringify({ executive_summary: d.executive_summary });\nconst sql = `INSERT INTO agent_outputs (job_id, agent_name, output_data, model_used, latency_ms) VALUES (${esc(d.job_id)}, 'synthesizer', ${esc(outputData)}::jsonb, 'gemini-3.6-flash', ${d.latency_ms});`;\n\nreturn [{ json: { sql } }];"
+      },
+      "id": "build-sql-log-synthesizer",
+      "name": "Code: Build SQL - Log Synthesizer Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3320,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}"
+      },
+      "id": "log-synthesizer-output",
+      "name": "Postgres: Log Synthesizer Output",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        3540,
+        520
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ai-research-postgres-cred",
+          "name": "AI Research Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function esc(v) {\n  if (v === null || v === undefined) return 'NULL';\n  if (typeof v === 'number') return String(v);\n  if (typeof v === 'boolean') return String(v);\n  const s = typeof v === 'string' ? v : JSON.stringify(v);\n  return \"'\" + s.replace(/'/g, \"''\") + \"'\";\n}\n\nconst d = $input.first().json;\nconst sql = `INSERT INTO final_reports (job_id, executive_summary, full_report, citations, recommended_actions) VALUES (${esc(d.job_id)}, ${esc(d.executive_summary)}, ${esc(JSON.stringify(d.full_report))}::jsonb, ${esc(JSON.stringify(d.citations))}::jsonb, ${esc(JSON.stringify(d.recommended_actions))}::jsonb) RETURNING id;`;\n\nreturn [{ json: { sql } }];"
+      },
+      "id": "build-sql-save-report",
+      "name": "Code: Build SQL - Save Final Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3320,
+        680
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}"
+      },
+      "id": "save-final-report",
+      "name": "Postgres: Save Final Report",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        3540,
+        680
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ai-research-postgres-cred",
+          "name": "AI Research Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function esc(v) {\n  if (v === null || v === undefined) return 'NULL';\n  if (typeof v === 'number') return String(v);\n  if (typeof v === 'boolean') return String(v);\n  const s = typeof v === 'string' ? v : JSON.stringify(v);\n  return \"'\" + s.replace(/'/g, \"''\") + \"'\";\n}\n\nconst jobId = $('Code: Parse Synthesizer Output').first().json.job_id;\nconst reportId = $input.first().json.id;\nconst sql = `UPDATE research_jobs SET status = 'completed', completed_at = now(), final_report_id = ${esc(reportId)} WHERE id = ${esc(jobId)};`;\n\nreturn [{ json: { sql } }];"
+      },
+      "id": "build-sql-complete-job",
+      "name": "Code: Build SQL - Mark Job Completed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3760,
+        680
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}"
+      },
+      "id": "complete-job",
+      "name": "Postgres: Mark Job Completed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        3980,
+        680
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ai-research-postgres-cred",
+          "name": "AI Research Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\n  job_id: $('Code: Parse Synthesizer Output').first().json.job_id,\n  status: \"completed\",\n  executive_summary: $('Code: Parse Synthesizer Output').first().json.executive_summary,\n  full_report: $('Code: Parse Synthesizer Output').first().json.full_report,\n  citations: $('Code: Parse Synthesizer Output').first().json.citations,\n  recommended_actions: $('Code: Parse Synthesizer Output').first().json.recommended_actions\n} }}"
+      },
+      "id": "respond",
+      "name": "Respond to Frontend",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        4200,
+        600
+      ]
+    }
+  ],
+  "connections": {
+    "Code: Build SQL - Create Job": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Create Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres: Create Job": {
+      "main": [
+        [
+          {
+            "node": "Code: Start Router Timer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Start Router Timer": {
+      "main": [
+        [
+          {
+            "node": "Gemini: Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini: Router": {
+      "main": [
+        [
+          {
+            "node": "Code: Parse Router Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Parse Router Output": {
+      "main": [
+        [
+          {
+            "node": "Code: Build SQL - Log Router Output",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Code: Start Researcher Timer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build SQL - Log Router Output": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Log Router Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Start Researcher Timer": {
+      "main": [
+        [
+          {
+            "node": "Gemini: Researcher",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini: Researcher": {
+      "main": [
+        [
+          {
+            "node": "Code: Parse Researcher Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Parse Researcher Output": {
+      "main": [
+        [
+          {
+            "node": "Code: Build SQL - Log Researcher Output",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Code: Build SQL - Save Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build SQL - Log Researcher Output": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Log Researcher Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build SQL - Save Sources": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Save Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres: Log Researcher Output": {
+      "main": [
+        [
+          {
+            "node": "Merge: Sync Researcher Branches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres: Save Sources": {
+      "main": [
+        [
+          {
+            "node": "Merge: Sync Researcher Branches",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge: Sync Researcher Branches": {
+      "main": [
+        [
+          {
+            "node": "Code: Prep + Start FactChecker Timer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Prep + Start FactChecker Timer": {
+      "main": [
+        [
+          {
+            "node": "Gemini: Fact Checker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini: Fact Checker": {
+      "main": [
+        [
+          {
+            "node": "Code: Parse Fact Checker Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Parse Fact Checker Output": {
+      "main": [
+        [
+          {
+            "node": "Code: Build SQL - Log FactChecker Output",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Code: Build SQL - Save Claims",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build SQL - Log FactChecker Output": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Log FactChecker Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build SQL - Save Claims": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Save Claims",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres: Log FactChecker Output": {
+      "main": [
+        [
+          {
+            "node": "Merge: Sync FactChecker Branches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres: Save Claims": {
+      "main": [
+        [
+          {
+            "node": "Merge: Sync FactChecker Branches",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge: Sync FactChecker Branches": {
+      "main": [
+        [
+          {
+            "node": "Code: Prep + Start Analyst Timer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Prep + Start Analyst Timer": {
+      "main": [
+        [
+          {
+            "node": "Gemini: Analyst",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini: Analyst": {
+      "main": [
+        [
+          {
+            "node": "Code: Parse Analyst Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Parse Analyst Output": {
+      "main": [
+        [
+          {
+            "node": "Code: Build SQL - Log Analyst Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build SQL - Log Analyst Output": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Log Analyst Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres: Log Analyst Output": {
+      "main": [
+        [
+          {
+            "node": "Code: Prep + Start Synthesizer Timer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Prep + Start Synthesizer Timer": {
+      "main": [
+        [
+          {
+            "node": "Gemini: Synthesizer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini: Synthesizer": {
+      "main": [
+        [
+          {
+            "node": "Code: Parse Synthesizer Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Parse Synthesizer Output": {
+      "main": [
+        [
+          {
+            "node": "Code: Build SQL - Log Synthesizer Output",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Code: Build SQL - Save Final Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build SQL - Log Synthesizer Output": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Log Synthesizer Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build SQL - Save Final Report": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Save Final Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres: Save Final Report": {
+      "main": [
+        [
+          {
+            "node": "Code: Build SQL - Mark Job Completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build SQL - Mark Job Completed": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Mark Job Completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres: Mark Job Completed": {
+      "main": [
+        [
+          {
+            "node": "Respond to Frontend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Submit Query": {
+      "main": [
+        [
+          {
+            "node": "Code: Build SQL - Check Rate Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build SQL - Check Rate Limit": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Check Rate Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres: Check Rate Limit": {
+      "main": [
+        [
+          {
+            "node": "Code: Attach Rate Limit Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Attach Rate Limit Context": {
+      "main": [
+        [
+          {
+            "node": "IF: Rate Limit Exceeded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Rate Limit Exceeded": {
+      "main": [
+        [
+          {
+            "node": "Respond: 429 Rate Limited",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code: Build SQL - Log Rate Limit Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build SQL - Log Rate Limit Entry": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Log Rate Limit Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres: Log Rate Limit Entry": {
+      "main": [
+        [
+          {
+            "node": "Code: Build SQL - Create Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

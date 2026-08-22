@@ -3,11 +3,17 @@
    actual verification states the Fact Checker agent assigns to claims. */
 
 :root {
-  --paper: #080808;
-  --paper-raised: #a8a4a4;
-  --ink: #444444;
-  --ink-soft: #ebebeb;
-  --ink-faint: #0b42c2;
+  /* Prevents Chromium's auto-dark-mode from inverting this page — the
+     design is light-only, and without this the browser will invert
+     text colors but not our hardcoded card backgrounds, breaking
+     contrast everywhere. */
+  color-scheme: light;
+
+  --paper: #f7f7f4;
+  --paper-raised: #ffffff;
+  --ink: #15181f;
+  --ink-soft: #52565f;
+  --ink-faint: #8a8d94;
   --line: #e3e3df;
   --line-strong: #cfcfc9;
 
