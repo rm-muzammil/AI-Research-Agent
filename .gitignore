@@ -1,48 +1,26 @@
-# ==============================================================================
-# 1. Monorepo & System Files
-# ==============================================================================
-.DS_Store
-Thumbs.db
-*.log
+# Secrets — never commit these
 .env
-.env*.local
+.env.local
+.env.*.local
+*.pem
 
-# ==============================================================================
-# 2. Next.js / Node.js Packages & Build Outputs
-# ==============================================================================
-# Dependency directories (placed anywhere in the monorepo)
-**/node_modules/
-.pnpm-store/
+# Dependencies
+node_modules/
+frontend/node_modules/
 
 # Next.js build output
-**/.next/
-**/out/
+frontend/.next/
+frontend/out/
 
-# Production build and caches
-**/dist/
-**/.turbo/
-**/.eslintcache
+# n8n local data (if ever run outside Docker)
+.n8n/
 
-# ==============================================================================
-# 3. Python Packages & Environments
-# ==============================================================================
-# Virtual environments (matches env, .env, venv, .venv at any depth)
-**/venv/
-**/.venv/
-**/env/
-**/.env/
+# OS / editor
+.DS_Store
+*.log
+.vscode/
+.idea/
 
-# Python dependency management files
-**/.poetry/
-**/.pdm/
-**/.pipenv/
-
-# Python build artifacts and caches
-**/__pycache__/
-**/*.py[cod]
-**/*$py.class
-**/.pytest_cache/
-**/.mypy_cache/
-**/*.egg-info/
-**/dist/
-**/build/
+# Docker volumes if bind-mounted locally
+postgres-data/
+n8n-data/

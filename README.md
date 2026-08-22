@@ -1,412 +1,98 @@
-# 🤖 AI Research Agent — $0 Architecture
+# AI Research Agent
 
-> A production-grade, multi-agent research system built with **n8n**, **Ollama** (local AI), **Gemini** (free tier), and **PostgreSQL**. Designed for portfolio demonstration and real-world research tasks.
+A 5-agent research pipeline that turns a question into an evidence-checked briefing — not just an LLM's confident-sounding answer, but one where every claim has been scored for how well the evidence actually supports it.
 
----
+**Live demo:** [ai-research-agent-plum.vercel.app](https://ai-research-agent-plum.vercel.app)
 
-## 🏗️ Architecture Overview
-
-```
-User Research Question
-         │
-         ▼
-┌─────────────────┐
-│  n8n            │
-│  Orchestrator   │
-└────────┬────────┘
-         │
-    ┌────┴────┐
-    ▼         ▼
- Router    Web Search
- (Ollama)  (Serper.dev)
-    │         │
-    └────┬────┘
-         ▼
-┌─────────────────────────┐
-│  Parallel Agent Dispatch │
-│  (Sub-workflows)         │
-└───────────┬─────────────┘
-            │
-    ┌───────┼───────┐
-    ▼       ▼       ▼
-Researcher Analyst  Fact Checker
-(Ollama)  (Gemini)  (Ollama)
-    │       │       │
-    └───────┼───────┘
-            ▼
-    ┌──────────────┐
-    │  PostgreSQL  │  ← Shared state & cache
-    │  (Memory)    │
-    └──────┬───────┘
-           ▼
-    ┌──────────────┐
-    │ Synthesizer  │  ← Gemini Flash (1 call)
-    │ (Gemini)     │
-    └──────┬───────┘
-           ▼
-    Final Report + Citations
-```
-
-**Cost Strategy:**
-- **Ollama (local)**: Routing, extraction, fact-checking, content classification → **$0**
-- **Gemini Flash (free tier)**: Complex reasoning, trend analysis, final synthesis → **$0** (1,500 req/day)
-- **Serper.dev**: Web search → **$0** (1,000 searches/month)
-- **PostgreSQL**: State management, caching, audit trail → **$0** (self-hosted)
+> Ask something like *"Which AI specialization should I choose to work in Germany by 2028?"* and watch five agents research it, cross-check it, and write it up — with a color-coded ledger showing exactly which claims are verified, disputed, unverifiable, or single-sourced.
 
 ---
 
-## 📁 Project Structure
+## Why this exists
+
+Most LLM-wrapper projects are a single prompt with a nice UI. This one isn't. The interesting engineering problem here is **evidence integrity**: an LLM will confidently state things with no source behind them, and a single "ask and format" pipeline has no way to catch that. This project adds a dedicated Fact Checker agent that audits every claim the Researcher surfaces, and an Analyst that has to work within those verification boundaries — so the final report can actually say *"this specific claim is unverifiable"* instead of quietly asserting it as fact.
+
+## Architecture
 
 ```
-ai-research-agent/
-├── docker-compose.yml          # Infrastructure: n8n, Postgres, Ollama, pgAdmin
-├── init.sql                    # Database schema + functions
-├── .env.example                # Template for environment variables
-├── setup.sh                    # One-command Ubuntu/WSL2 setup
-├── README.md                   # This file
-│
-├── prompts/                    # Agent system prompts
-│   ├── router.txt
-│   ├── researcher.txt
-│   ├── analyst.txt
-│   ├── fact_checker.txt
-│   └── synthesizer.txt
-│
-├── n8n-workflows/              # Importable n8n workflows
-│   ├── master-orchestrator.json
-│   ├── agent-researcher.json
-│   └── agent-fact-checker.json
-│
-├── scripts/                    # Helper utilities
-│   ├── test_client.py          # Submit research queries
-│   └── db_helper.py            # Inspect database state
-│
-└── docs/                       # Documentation (you add this)
+Next.js UI  →  n8n webhook  →  ┌─────────┐   ┌────────────┐   ┌──────────────┐   ┌─────────┐   ┌─────────────┐
+                                │ Router  │ → │ Researcher │ → │ Fact Checker │ → │ Analyst │ → │ Synthesizer │
+                                └─────────┘   └────────────┘   └──────────────┘   └─────────┘   └─────────────┘
+                                                     ↓                 ↓                              ↓
+                                              sources table     claims table              final_reports table
+                                                                                                      ↓
+                                                                          Next.js dashboard ← Postgres (read-only role)
 ```
+
+- **Router** breaks the question into 4–6 sub-questions.
+- **Researcher** finds 2–3 sources per sub-question in a single batched call (not one call per sub-question — see *Design decisions* below).
+- **Fact Checker** extracts the concrete claims made across all the research and classifies each one: `verified` (2+ independent sources agree), `disputed` (sources conflict), `unverifiable` (no real support), or `unverified` (single source only).
+- **Analyst** builds the comparison/trends/tradeoffs using the fact-checked claims, explicitly instructed to flag disputed or unverifiable material as caveats rather than presenting it as settled.
+- **Synthesizer** writes the final report, folding the Analyst's comparison and any caveats into a structured briefing with citations.
+
+Every agent call is logged to `agent_outputs` with model, latency, and (soon) token cost — so the dashboard's Agent Trace isn't a fake progress bar, it's reading real execution data.
+
+## Stack
+
+| Layer | Technology |
+|---|---|
+| Orchestration | n8n (self-hosted, Docker) |
+| LLM | Gemini API |
+| Database | PostgreSQL (Neon in production) |
+| Frontend | Next.js 15 (App Router), TypeScript, Tailwind |
+| Hosting | Railway (n8n) · Vercel (frontend) · Neon (Postgres) |
+
+## Features
+
+- **Evidence Ledger** — every claim in a report is traceable to a verification status, not just presented as fact.
+- **Agent Trace** — a real-time-derived pipeline view showing which of the 5 agents ran, and how long each took.
+- **Case Log dashboard** — browse every research job ever run, click into any one for the full trace, claims, sources, and report.
+- **Rate limiting** — the public webhook caps submissions per IP (protects the LLM API budget from abuse).
+- **Least-privilege database access** — the frontend dashboard connects with a read-only Postgres role; only the n8n backend can write.
+
+## Design decisions worth knowing about
+
+- **Batched Researcher calls, not fan-out.** The original design called Gemini once per sub-question. In production this blew through the free-tier rate limit almost immediately. Rebuilt to send all sub-questions in a single Researcher call — same output, a third of the API calls.
+- **SQL built in Code nodes, not n8n's native query-parameter field.** n8n's Postgres node has a long-standing bug where parameter values containing commas (which every JSON payload has) break its comma-separated parameter parsing. Every write instead goes through a Code node that builds a fully-escaped SQL string, sidestepping the bug entirely.
+- **Retry-on-fail on every Gemini call.** LLM APIs return transient `503`s under load. Each of the 5 agent calls retries automatically (3 attempts, 8s backoff) rather than failing the whole pipeline on a blip.
+
+## Project structure
+
+```
+├── docker-compose.yml        # local dev stack: n8n + Postgres
+├── init.sql                  # database schema
+├── roles.sql                 # production least-privilege DB roles + rate limit table
+├── n8n-workflows/
+│   ├── phase1-workflow.json      # Router → Researcher → Synthesizer (early version)
+│   └── production-workflow.json  # full 5-agent pipeline + rate limiting + retries
+├── prompts/                  # the actual agent prompts, versioned separately for iteration
+├── frontend/                 # Next.js app: submission page + dashboard
+├── scripts/                  # local dev helpers
+└── docs/
+```
+
+## Running it locally
+
+```bash
+cp .env.example .env   # add your GEMINI_API_KEY
+docker compose up -d
+```
+
+Open `http://localhost:5678`, import `n8n-workflows/production-workflow.json`, set the Postgres credential on each node, activate.
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000`.
+
+## What's next
+
+- Populate `agent_outputs.cost_estimate` using Gemini's `usageMetadata` token counts for real per-run cost tracking.
+- Move from synchronous request/response to fire-and-poll for the submission flow, so long pipeline runs aren't vulnerable to proxy timeouts.
 
 ---
 
-## 🚀 Quick Start (Step-by-Step)
-
-### Step 0: Prerequisites
-
-You need:
-- **Windows 11** with **WSL2** and **Ubuntu** installed
-- **Docker Desktop** (WSL2 backend enabled) OR Docker Engine inside WSL2
-- At least **8GB RAM** (16GB recommended for Ollama models)
-- **~10GB free disk space** (for Docker images + Ollama models)
-
-Verify WSL2:
-```bash
-wsl --list --verbose
-# Should show Ubuntu with VERSION 2
-```
-
-### Step 1: Clone & Enter the Project
-
-```bash
-# In Ubuntu WSL2
-cd ~
-git init ai-research-agent
-cd ai-research-agent
-
-# Copy all project files here (from this repo)
-# Or create them manually following this guide
-```
-
-### Step 2: Get Free API Keys
-
-**A. Gemini API Key** (for complex reasoning)
-1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey)
-2. Click "Create API Key"
-3. Copy the key
-
-**B. Serper.dev API Key** (for web search)
-1. Go to [Serper.dev](https://serper.dev)
-2. Sign up (free tier = 1,000 searches/month)
-3. Copy your API key from the dashboard
-
-### Step 3: Configure Environment
-
-```bash
-# Copy the template
-cp .env.example .env
-
-# Edit with your keys
-nano .env
-```
-
-Fill in:
-```env
-GEMINI_API_KEY=your_actual_gemini_key_here
-SERPER_API_KEY=your_actual_serper_key_here
-```
-
-### Step 4: Run the Automated Setup
-
-```bash
-chmod +x setup.sh
-bash setup.sh
-```
-
-This script will:
-1. ✅ Check/install Docker & Docker Compose
-2. ✅ Create your `.env` file
-3. ✅ Start PostgreSQL, n8n, and Ollama containers
-4. ✅ Pull Ollama models (`phi4`, `llama3.1:8b`, `nomic-embed-text`)
-5. ✅ Verify all services are healthy
-
-**⏱️ This takes 10-20 minutes** (mostly downloading models).
-
-### Step 5: Verify Everything is Running
-
-```bash
-# Check containers
-docker-compose ps
-
-# Check Ollama models
-curl http://localhost:11434/api/tags
-
-# Check n8n health
-curl http://localhost:5678/healthz
-
-# Check PostgreSQL
-docker exec ai_research_db pg_isready -U research_user
-```
-
-All should report **healthy/running**.
-
-### Step 6: Open n8n & Import Workflows
-
-1. Open browser → `http://localhost:5678`
-2. Login: `admin` / `admin123`
-3. Go to **Workflows** → **Import from File**
-4. Import in this order:
-   - `n8n-workflows/agent-researcher.json`
-   - `n8n-workflows/agent-fact-checker.json`
-   - `n8n-workflows/master-orchestrator.json`
-
-### Step 7: Configure n8n Credentials
-
-In n8n, go to **Settings** → **Credentials**:
-
-1. **Ollama**: 
-   - Base URL: `http://ollama:11434`
-   - Model: `phi4` (or `llama3.1:8b`)
-
-2. **Google Gemini (PaLM)**:
-   - API Key: your Gemini key
-   - Model: `gemini-1.5-flash`
-
-3. **PostgreSQL**:
-   - Host: `postgres`
-   - Port: `5432`
-   - Database: `ai_research`
-   - User: `research_user`
-   - Password: `research_pass`
-
-### Step 8: Test Your First Research Query
-
-```bash
-# Install Python dependencies (if needed)
-pip install requests tabulate psycopg2-binary
-
-# Run a test query
-python scripts/test_client.py "What are the best AI engineering specializations for Germany by 2028?"
-```
-
-Or trigger directly via curl:
-```bash
-curl -X POST http://localhost:5678/webhook/research \
-  -H "Content-Type: application/json" \
-  -d '{"query": "Your research question here"}'
-```
-
-### Step 9: Monitor in Real-Time
-
-```bash
-# Watch database state
-python scripts/db_helper.py list
-
-# View specific job
-python scripts/db_helper.py show <job-id-from-list>
-
-# View final report
-python scripts/db_helper.py report <job-id>
-```
-
-Also open **pgAdmin** at `http://localhost:5050` (admin@local.com / admin123) to browse tables visually.
-
----
-
-## 🧠 How It Works
-
-### 1. Query Reception
-- User sends POST to n8n webhook with research question
-- n8n creates a `research_jobs` record in PostgreSQL
-
-### 2. Routing (Ollama — phi4)
-- The **Router Agent** classifies the query
-- Determines which agents to activate
-- Generates search keywords
-- **Cost: $0** (local model)
-
-### 3. Web Search (Serper.dev — free tier)
-- Searches Google via Serper API
-- Stores raw results in `sources` table
-- **Cost: $0** (1,000 free/month)
-
-### 4. Parallel Agent Execution
-
-**Researcher Agent** (Ollama — llama3.1:8b)
-- Scrapes web pages from search results
-- Extracts structured facts, entities, quotes
-- Stores findings in `agent_outputs`
-- **Cost: $0** (local model)
-
-**Analyst Agent** (Gemini — Flash)
-- Reads researcher findings
-- Performs trend analysis, comparative scoring
-- Identifies risks and opportunities
-- Stores analysis in `agent_outputs`
-- **Cost: ~$0** (1 of ~5 Gemini calls per job)
-
-**Fact Checker Agent** (Ollama — llama3.1:8b)
-- Reads all claims from Researcher + Analyst
-- Cross-references with source material
-- Updates `claims` table with verification status
-- **Cost: $0** (local model)
-
-### 5. Synthesis (Gemini — Flash)
-- Reads all verified outputs from PostgreSQL
-- Generates executive summary, recommendations, roadmap
-- Formats citations with source links
-- Stores final report
-- **Cost: ~$0** (1 Gemini call per job)
-
-### 6. Response
-- Returns structured JSON report to user
-- Saves everything in database for audit/reuse
-
----
-
-## 💰 Cost Breakdown
-
-| Component | Service | Free Tier | Your Usage |
-|-----------|---------|-----------|------------|
-| Orchestration | n8n (self-hosted) | Unlimited | **$0** |
-| Local AI | Ollama | Unlimited | **$0** |
-| Cloud AI | Gemini Flash | 1,500 req/day | **$0** |
-| Web Search | Serper.dev | 1,000/mo | **$0** |
-| Database | PostgreSQL (self-hosted) | Unlimited | **$0** |
-| **TOTAL** | | | **$0/month** |
-
-> ⚠️ If you exceed Serper's 1,000 searches, you can switch to Brave Search API (2,000 free) or use DuckDuckGo scraping (unlimited but less reliable).
-
----
-
-## 🔧 Customization
-
-### Change Ollama Models
-
-Edit `setup.sh` and change the model list:
-```bash
-MODELS=("phi4" "llama3.1:8b" "nomic-embed-text")
-# Or use smaller models for faster inference:
-# MODELS=("phi3" "gemma2:2b" "nomic-embed-text")
-```
-
-Then re-pull:
-```bash
-docker exec ai_research_ollama ollama pull your-model-name
-```
-
-### Add More Agents
-
-1. Create a new prompt in `prompts/`
-2. Create a new sub-workflow in `n8n-workflows/`
-3. Add it to the parallel dispatch in the master orchestrator
-
-### Change Search Provider
-
-In the master orchestrator, replace the Serper HTTP node with:
-- **Brave Search**: `https://api.search.brave.com/res/v1/web/search`
-- **DuckDuckGo**: Use a Python script node
-
-### Enable GPU Acceleration (WSL2)
-
-If you have an NVIDIA GPU:
-1. Install [NVIDIA CUDA on WSL2](https://docs.nvidia.com/cuda/wsl-user-guide/)
-2. Uncomment the `deploy` section in `docker-compose.yml` for the Ollama service
-3. Restart: `docker-compose up -d ollama`
-
----
-
-## 🐛 Troubleshooting
-
-### "Cannot connect to Docker daemon"
-```bash
-sudo usermod -aG docker $USER
-# Logout and login again, or:
-newgrp docker
-```
-
-### Ollama models are slow
-- **Without GPU**: Expect 5-15 seconds per token on CPU
-- **Solution**: Use smaller models (`phi3`, `gemma2:2b`) or enable GPU
-
-### "Gemini API quota exceeded"
-- Free tier: 1,500 requests/day for Flash
-- Check usage at [Google AI Studio](https://aistudio.google.com/app/apikey)
-- **Solution**: The system is designed to use only ~5 Gemini calls per research job. If you hit limits, add rate limiting in n8n or use Ollama for more tasks.
-
-### n8n workflows show "Connection Error"
-- Make sure credential names match exactly in workflow nodes
-- Check that PostgreSQL credentials use `postgres` (container name) not `localhost`
-- Verify Ollama URL is `http://ollama:11434` (internal Docker network)
-
-### "No such file or directory" for init.sql
-```bash
-# Make sure init.sql is in the same directory as docker-compose.yml
-ls -la init.sql
-# If not, copy it:
-cp /path/to/init.sql ./
-# Then restart Postgres:
-docker-compose restart postgres
-```
-
----
-
-## 📊 Portfolio Value
-
-This project demonstrates:
-
-| Skill | Evidence |
-|-------|----------|
-| **Agent Architecture** | Multi-agent orchestration with specialized roles |
-| **Workflow Automation** | n8n for complex business logic |
-| **Local AI Deployment** | Ollama + model selection for cost optimization |
-| **API Integration** | Gemini, Serper, PostgreSQL |
-| **Database Design** | Schema for state management, caching, audit trails |
-| **Cost Engineering** | Tiered model usage ($0 operational cost) |
-| **Validation & QA** | Dedicated fact-checking agent with source grounding |
-| **Structured Outputs** | JSON schemas for agent-to-agent communication |
-| **Containerization** | Docker Compose for reproducible infrastructure |
-
----
-
-## 📝 License
-
-MIT — Use this for your portfolio, job applications, or personal projects.
-
----
-
-## 🙋 Next Steps
-
-1. **Run your first query** and verify the output
-2. **Customize prompts** for your domain (e.g., medical research, legal analysis)
-3. **Add a frontend** (Streamlit, Next.js) to make it interactive
-4. **Add RAG** — use `nomic-embed-text` to embed sources and retrieve relevant chunks
-5. **Deploy** — put it on a $5 VPS (Hetzner, DigitalOcean) for 24/7 access
-
-**Questions?** Check the n8n community forum or Ollama Discord for model-specific help.
+Built as part of a portfolio project targeting AI/ML engineering roles in Germany.
